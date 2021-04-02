@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-        <LangVersion>8</LangVersion>
+        <LangVersion>default</LangVersion>
 	<DefineConstants></DefineConstants>
 	<OutputType>Exe</OutputType>
 	<Nullable>enable</Nullable>
@@ -16,6 +16,7 @@
     <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
       <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     </PropertyGroup>
+
   <ItemGroup>
     <Reference Include="Mono.Cecil, Version=0.9.6.0, Culture=neutral, PublicKeyToken=0738eb9f132ed756">
       <HintPath>../../UnityProj/Assets/Plugins/Mono.Cecil.dll</HintPath>
