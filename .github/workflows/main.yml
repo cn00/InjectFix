@@ -3,7 +3,7 @@ name: build
 on: 
   push:
     paths: 
-      - build/**
+      - ./Source/**
       - .github/workflows/main.yml
 
 jobs:
