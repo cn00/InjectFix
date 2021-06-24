@@ -12,26 +12,22 @@ using System.Security.Cryptography;
 using System.Text;
 using Helper;
 using IFix.Core;
-
-#if UNITY_2020_1_OR_NEWER
 using UnityEditor.AssetImporters;
-#else
-using UnityEditor.Experimental.AssetImporters;
-#endif
 
-[ScriptedImporter(2, new[]{"ifix"})]
-public class IFixAssetImpot : ScriptedImporter
+#if true
+[UnityEditor.AssetImporters.ScriptedImporter(2, new[]{"ifix"})]
+public class IFixAssetImporter : UnityEditor.AssetImporters.ScriptedImporter
 {
-    public override void OnImportAsset(AssetImportContext ctx)
+    public override void OnImportAsset(UnityEditor.AssetImporters.AssetImportContext ctx)
     {
         var prefax = Path.GetExtension(ctx.assetPath).Substring(1);
         var asset = ScriptableObject.CreateInstance<IFixAsset>();
         asset.data = File.ReadAllBytes(ctx.assetPath);
-       
+
         ctx.AddObjectToAsset("main obj", asset, LoadIconTexture(prefax));
         ctx.SetMainObject(asset);
     }
-    
+
     private Texture2D LoadIconTexture(string prefax)
     {
         return AssetDatabase.LoadAssetAtPath("Assets/IFix/Editor/ifix.png", typeof(Texture2D)) as Texture2D;
@@ -45,7 +41,7 @@ public class IFixAssetEditor : Editor
     public void OnEnable()
     {
         mTarget = target as IFixAsset;
-        
+
     }
 
     public void OnDestroy()
@@ -55,6 +51,7 @@ public class IFixAssetEditor : Editor
     private static bool mShowBase = false;
     public override void OnInspectorGUI()
     {
+        GUI.enabled = true;
         mShowBase = EditorGUILayout.Toggle("ShowBase", mShowBase);
         // if (mShowBase)
         // {
@@ -75,17 +72,18 @@ public class IFixAssetEditor : Editor
     private static bool foldoutFixCount = false;
     private static bool foldoutStaticFieldType = false;
     private static bool foldoutNewClass = false;
+    private static bool foldoutInterfaces = false;
 
     void DrawIFixPatch()
     {
         var fileStream = new MemoryStream(mTarget.data);
         var reader = new BinaryReader(fileStream);
-        try
+        // try
         // if(true)
         {
 
             var magic = reader.ReadInt64();
-            magic = EditorGUILayout.LongField("Magic", magic);
+            EditorGUILayout.LongField("Magic", magic);
             var interfaceBridgeTypeName = reader.ReadString();
             EditorGUILayout.LabelField("interfaceBridge", interfaceBridgeTypeName);
 
@@ -109,7 +107,6 @@ public class IFixAssetEditor : Editor
                     }
                 }
             }
-
             --EditorGUI.indentLevel;
 
             int methodCount = reader.ReadInt32();
@@ -199,6 +196,37 @@ public class IFixAssetEditor : Editor
                     EditorGUILayout.LabelField($"{i}:{staticFieldTypes} cctors:{cctors}");
             }
             --EditorGUI.indentLevel;
+            
+            Dictionary<MethodInfo, int> itfMethodToId = new Dictionary<MethodInfo, int>();
+            int maxId = 0;
+            var interfaceBridgeType = Type.GetType(interfaceBridgeTypeName);
+            var interfaces = interfaceBridgeType.GetInterfaces();
+            int interfaceCount = interfaces.Length;
+            foldoutInterfaces = EditorGUILayout.Foldout(foldoutInterfaces, $"interface: {interfaceCount}", true);
+            ++EditorGUI.indentLevel;
+            foreach (var itf in interfaces)
+            {
+                InterfaceMapping map = interfaceBridgeType.GetInterfaceMap(itf);
+                for (int i = 0; i < map.InterfaceMethods.Length; i++)
+                {
+                    IDTagAttribute idTag = Attribute.GetCustomAttribute(map.TargetMethods[i],
+                        typeof(IDTagAttribute), false) as IDTagAttribute;
+                    MethodInfo im = map.InterfaceMethods[i];
+                    if (idTag == null)
+                    {
+                        throw new Exception(string.Format("can not find id for {0}", im));
+                    }
+                    int id = idTag.ID;
+                    //VirtualMachine._Info(string.Format("{0} [{1}]", im, id));
+                    maxId = id > maxId ? id : maxId;
+                    itfMethodToId.Add(im, id);
+                }
+                if (foldoutInterfaces)
+                {
+                    EditorGUILayout.LabelField($"{itf} map:{map}");
+                }
+            }
+            --EditorGUI.indentLevel;
 
             var anonymousStoreyInfoCount = reader.ReadInt32();
             var anonymousStoreyInfos = new AnonymousStoreyInfo[anonymousStoreyInfoCount];
@@ -206,59 +234,77 @@ public class IFixAssetEditor : Editor
             ++EditorGUI.indentLevel;
             for (int i = 0; i < anonymousStoreyInfoCount; i++)
             {
-                int fieldNum = reader.ReadInt32();
-                // EditorGUILayout.LongField("field", fieldNum);
                 ++EditorGUI.indentLevel;
-                var fieldTypes = new List<int>();
-                for (int fieldIdx = 0; fieldIdx < fieldNum; ++fieldIdx)
                 {
-                    fieldTypes.Add(reader.ReadInt32());
+                    int fieldNum = reader.ReadInt32();
+                    // EditorGUILayout.LongField("field", fieldNum);
+                    int[] fieldTypes = new int[fieldNum];
+                    for (int fieldIdx = 0; fieldIdx < fieldNum; ++fieldIdx)
+                    {
+                        fieldTypes[fieldIdx] = reader.ReadInt32();
+                    }
+
+                    int ctorId = reader.ReadInt32();
+                    int ctorParamNum = reader.ReadInt32();
+                    var slots = IFix.Core.PatchManager.readSlotInfo(reader, itfMethodToId, externTypes, maxId);
+
+                    int virtualMethodNum = reader.ReadInt32();
+                    if (virtualMethodNum < 0 || virtualMethodNum > 256)
+                    {
+                        throw new Exception($"virtualMethodNum:{virtualMethodNum}");
+                    }
+
+                    int[] vTable = new int[virtualMethodNum];
+                    for (int vm = 0; vm < virtualMethodNum; vm++)
+                    {
+                        vTable[vm] = reader.ReadInt32();
+                    }
+
+                    anonymousStoreyInfos[i] = new AnonymousStoreyInfo()
+                    {
+                        CtorId = ctorId,
+                        FieldNum = fieldNum,
+                        FieldTypes = fieldTypes,
+                        CtorParamNum = ctorParamNum,
+                        Slots = slots,
+                        VTable = vTable
+                    };
+
+                    if (foldoutanonymousStorey)
+                        EditorGUILayout.LabelField($"- id:{ctorId} fn:{fieldNum} [{(string.Join(",", fieldTypes.Select(it => it >= 0 ? externTypes[it].ToString() : it.ToString())))}] ctorPrmNum:{ctorParamNum} slots:{slots} virtualMethodNum:{virtualMethodNum}");
                 }
                 --EditorGUI.indentLevel;
+                
+                // int interfaceCount = reader.ReadInt32();
+                // var interfaces = new List<Tuple<int, List<int>>>();
+                // // EditorGUILayout.LongField("interface", interfaceCount);
+                // ++EditorGUI.indentLevel;
+                // for (int ii = 0; ii < interfaceCount; ii++)
+                // {
+                //     var itfId = reader.ReadInt32();
+                //     var itf = externTypes[itfId];
+                //     var methodIds = new List<int>();
+                //     foreach (var method in itf.GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public
+                //         | BindingFlags.Instance))
+                //     {
+                //         int methodId = reader.ReadInt32();
+                //         methodIds.Add(methodId);
+                //     }
+                //     interfaces.Add(new Tuple<int, List<int>>(itfId,methodIds));
+                // }
+                // --EditorGUI.indentLevel;
 
-                int ctorId = reader.ReadInt32();
-                int ctorParamNum = reader.ReadInt32();
-                // var slots = IFix.Core.PatchManager.readSlotInfo(reader, itfMethodToId, externTypes, maxId);
-                int interfaceCount = reader.ReadInt32();
-                var interfaces = new List<Tuple<int, List<int>>>();
-                // EditorGUILayout.LongField("interface", interfaceCount);
-                ++EditorGUI.indentLevel;
-                for (int ii = 0; ii < interfaceCount; ii++)
-                {
-                    var itfId = reader.ReadInt32();
-                    var itf = externTypes[itfId];
-                    var methodIds = new List<int>();
-                    foreach (var method in itf.GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public
-                        | BindingFlags.Instance))
-                    {
-                        int methodId = reader.ReadInt32();
-                        methodIds.Add(methodId);
-                    }
-                    interfaces.Add(new Tuple<int, List<int>>(itfId,methodIds));
-                }
-                --EditorGUI.indentLevel;
 
-                int virtualMethodNum = reader.ReadInt32();
-                if (virtualMethodNum < 0 || virtualMethodNum > 256)
-                {
-                    throw new Exception($"virtualMethodNum:{virtualMethodNum}");
-                }
-                int[] vTable = new int[virtualMethodNum];
-                for (int vm = 0; vm < virtualMethodNum; vm++)
-                {
-                    vTable[vm] = reader.ReadInt32();
-                }
-
-                if(foldoutanonymousStorey)
-                {
-                    EditorGUILayout.LabelField($"{i}: ctorId:{ctorId} fieldNum:{fieldNum} ctorParamNum:{ctorParamNum} vTable:[{string.Join(",", vTable)}]");
-                    ++EditorGUI.indentLevel;
-                    foreach (var itf in interfaces)
-                    {
-                        EditorGUILayout.LabelField($"itf:{itf.Item1} mthIds:[{string.Join(",", itf.Item2)}] [{externTypes[itf.Item1]}]");
-                    }
-                    --EditorGUI.indentLevel;
-                }
+                // if(foldoutanonymousStorey)
+                // {
+                //     EditorGUILayout.LabelField($"{i}: ctorId:{ctorId} fieldNum:{fieldNum} ctorParamNum:{ctorParamNum} vTable:[{string.Join(",", vTable)}]");
+                //     ++EditorGUI.indentLevel;
+                //     foreach (var itf in interfaces)
+                //     {
+                //         EditorGUILayout.LabelField($"itf:{itf.Item1} mthIds:[{string.Join(",", itf.Item2)}] [{externTypes[itf.Item1]}]");
+                //     }
+                //     --EditorGUI.indentLevel;
+                // }
             }
             --EditorGUI.indentLevel;
 
@@ -275,7 +321,7 @@ public class IFixAssetEditor : Editor
                 var fixMethod = IFix.Core.PatchManager.readMethod(reader, externTypes);
                 var fixMethodId = reader.ReadInt32();
                 if(foldoutFixCount)
-                    EditorGUILayout.LabelField($"{i}: {fixMethodId}:{fixMethod}");
+                    EditorGUILayout.LabelField($"{i}: {fixMethodId}:{fixMethod.DeclaringType}:{fixMethod}");
             }
             --EditorGUI.indentLevel;
 
@@ -287,27 +333,22 @@ public class IFixAssetEditor : Editor
                 var newClassFullName = reader.ReadString();
                 var newClassName = Type.GetType(newClassFullName);
                 if(foldoutNewClass)
-                    EditorGUILayout.LabelField($"{i}: {newClassName}");
+                    EditorGUILayout.LabelField($"{i}:{newClassFullName} {newClassName}");
             }
             --EditorGUI.indentLevel;
-        }
-        catch (Exception e)
-        {
-            Debug.LogError(e);
-        }
-        finally
-        {
+        // }
+        // catch (Exception e)
+        // {
+        //     Debug.LogError(e);
+        // }
+        // finally
+        // {
             fileStream.Dispose();
             reader.Dispose();
         }
 
     }
 }
-
-
-
-
-
 
 [ScriptedImporter(2, new[] {"icfg"})]
 public class IFixCfgImpot : ScriptedImporter
@@ -317,11 +358,11 @@ public class IFixCfgImpot : ScriptedImporter
         var prefax = Path.GetExtension(ctx.assetPath).Substring(1);
         var asset = ScriptableObject.CreateInstance<IFixCfgAsset>();
         asset.data = File.ReadAllBytes(ctx.assetPath);
-       
+
         ctx.AddObjectToAsset("main obj", asset, LoadIconTexture(prefax));
         ctx.SetMainObject(asset);
     }
-    
+
     private Texture2D LoadIconTexture(string prefax)
     {
         return AssetDatabase.LoadAssetAtPath("Assets/IFix/Editor/ifix.png", typeof(Texture2D)) as Texture2D;
@@ -336,7 +377,7 @@ public class IFixCfgEditor : Editor
     public void OnEnable()
     {
         mTarget = target as IFixCfgAsset;
-        
+
     }
 
     public void OnDestroy()
@@ -371,7 +412,7 @@ public class IFixCfgEditor : Editor
             {
                 var name = reader.ReadString();
                 var mc = reader.ReadInt32();
-                EditorGUILayout.IntField($"{i}-{name}", mc);
+                EditorGUILayout.IntField($"{i}:{name}", mc);
                 ++EditorGUI.indentLevel;
                 for (int j = 0; j < mc; j++)
                 {
@@ -435,14 +476,15 @@ public class IFixCfgEditor : Editor
             }
             --EditorGUI.indentLevel;
         };
-        
+
         readMethods("patchMethods");
         readMethods("newMethods");
         readFields("fieldGroups");
         readFields("properties");
         readNewClasses();
-        
+
         fileStream.Dispose();
         reader.Dispose();
     }
 }
+#endif
